@@ -1,0 +1,44 @@
+{
+    "executions": [
+        {
+            "ticket_id": "ATD-001",
+            "dag_ids": [
+                {
+                    "dag_id": "dag_study",
+                    "conf": {
+                        "greeting": "Hello",
+                        "target": "Airflow"
+                    }
+                },
+                {
+                    "dag_id": "dag_study_exception",
+                    "conf": {}
+                }
+            ]
+        },
+        {
+            "ticket_id": "ATD-002",
+            "dag_ids": [
+                {
+                    "dag_id": "dag_study",
+                    "conf": {
+                        "greeting": "Hello",
+                        "target": "Victor"
+                    }
+                }
+            ]
+        },
+        {
+            "ticket_id": "ATD-003",
+            "dag_ids": [
+                {
+                    "dag_id": "dag_study",
+                    "conf": {
+                        "greeting": "Hello",
+                        "target": "another person"
+                    }
+                }
+            ]
+        }
+    ]
+}

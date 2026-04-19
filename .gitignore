@@ -1,0 +1,16 @@
+# Ambiente
+.env
+*.pyc
+__pycache__/
+.DS_Store
+
+# Logs do Airflow
+logs/
+
+# Controle de estado interno (gerado em runtime)
+inputs/monitor_dags_last_mtime
+
+# Airflow runtime
+airflow.db
+airflow-webserver.pid
+standalone_admin_password.txt
