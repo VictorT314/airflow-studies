@@ -23,16 +23,18 @@ with open(INPUT_FILE) as _f:
 
 @dag(
     dag_id="monitor_dags",
-    schedule="0 19,23 * * *",
+    schedule="0 22,2 * * *",
     start_date=datetime(2026, 1, 1),
     catchup=False,
+    max_active_runs=1,
 )
 def monitor_dags():
 
     @task.short_circuit
     def check_file_changes() -> bool:
-        """Verifica se o arquivo de inputs foi alterado desde a última execução
-        e se há execuções pendentes. Encerra com sucesso (sem disparar tasks
+        """
+        Verifica se o arquivo de inputs foi alterado desde a última execução e
+        se há execuções pendentes. Encerra com sucesso (sem disparar tasks
         seguintes) caso o arquivo não tenha mudado ou esteja sem execuções.
         """
         log.info(f"Verificando alterações no arquivo de inputs {INPUT_FILE!r}")
@@ -91,7 +93,8 @@ def monitor_dags():
 
     @task(retries=5, retry_delay=timedelta(minutes=2))
     def check_dags_in_dagbag(ticket_id: str, dag_ids: list) -> None:
-        """Verifica se todos os dag_ids do ticket estão presentes no DagBag.
+        """
+        Verifica se todos os dag_ids do ticket estão presentes no DagBag.
         Retenta até 5 vezes com intervalo de 2 minutos se algum estiver ausente.
         """
         log.info(f"[Ticket {ticket_id}] Verificando DAGs no DagBag: {dag_ids}")
@@ -115,20 +118,45 @@ def monitor_dags():
 
         log.info(f"[Ticket {ticket_id}] Todas as DAGs confirmadas: {dag_ids}.")
 
-    @task(trigger_rule="all_done")
-    def cleanup_inputs() -> None:
-        """Limpa as execuções do arquivo de inputs após o processamento de
-        todos os tickets (independentemente de sucesso ou falha).
+    @task
+    def report_success(ticket_id: str) -> str:
         """
-        log.info(f"Limpando execuções do arquivo de inputs {INPUT_FILE!r}")
+        Retorna o ticket_id se todo o processamento do chamado foi bem-sucedido.
+        É ignorada (skipped) caso qualquer task anterior do chamado tenha
+        falhado.
+        """
+        log.info(f"[Ticket {ticket_id}] Processamento concluído com sucesso.")
+        return ticket_id
+
+    @task(trigger_rule="all_done")
+    def cleanup_inputs(successful_tickets: list) -> None:
+        """
+        Remove do arquivo de inputs apenas as execuções processadas com sucesso.
+        Execuções que falharam são mantidas para reprocessamento.
+        """
+        log.info(f"Limpando execuções bem-sucedidas do arquivo {INPUT_FILE!r}")
+
+        successful = {t for t in successful_tickets if t is not None}
+        log.info(f"Execuções bem-sucedidas a remover: {successful or 'nenhuma'}")
+
+        with open(INPUT_FILE) as f:
+            config = json.load(f)
+
+        original = config.get("executions", [])
+        remaining = [e for e in original if e["ticket_id"] not in successful]
+
         with open(INPUT_FILE, "w") as f:
-            json.dump({"executions": []}, f, indent=4)
-        log.info("Arquivo de inputs limpo com sucesso.")
+            json.dump({"executions": remaining}, f, indent=4)
+
+        removed = len(original) - len(remaining)
+        log.info(
+            f"{removed} execução(ões) removida(s). "
+            f"{len(remaining)} execução(ões) mantida(s)."
+        )
 
     file_changed = check_file_changes()
-    cleanup = cleanup_inputs()
+    success_reports = []
 
-    last_ops = []
     for execution in _config["executions"]:
         ticket_id = execution["ticket_id"]
         dag_entries = execution["dag_ids"]
@@ -159,9 +187,13 @@ def monitor_dags():
             prev >> trigger_op
             prev = trigger_op
 
-        last_ops.append(prev)
+        success_op = report_success.override(task_id=f"report_success__{ticket_id}")(
+            ticket_id=ticket_id
+        )
+        prev >> success_op
+        success_reports.append(success_op)
 
-    last_ops >> cleanup
+    cleanup_inputs(success_reports)
 
 
 monitor_dags()
