@@ -1,6 +1,6 @@
 # Airflow — Atendimento de Chamados
 
-Repositório para orquestração de chamados via Apache Airflow. A DAG `monitor_dags` é responsável por detectar alterações no arquivo de inputs, verificar a disponibilidade das DAGs configuradas, executá-las conforme definido e limpar o arquivo ao final.
+Repositório para orquestração de chamados via Apache Airflow. A DAG `monitor_dags` é responsável por detectar alterações no arquivo de inputs, verificar a disponibilidade das DAGs configuradas, executá-las conforme definido e remover do arquivo de inputs apenas as execuções concluídas com sucesso.
 
 ---
 
@@ -72,11 +72,12 @@ O atendente é responsável por registrar quais DAGs devem ser executadas para a
 
 ### Regras importantes
 
+- **Apenas uma execução da `monitor_dags` pode estar ativa por vez.** Se uma execução já estiver em andamento quando um novo agendamento ou trigger ocorrer, o novo disparo será ignorado.
 - Cada entrada em `executions` representa um chamado independente. Chamados diferentes rodam **em paralelo**.
 - As DAGs dentro de um mesmo chamado rodam **em sequência**, na ordem em que estão listadas.
 - Se uma DAG da sequência falhar, as seguintes **não serão executadas**.
 - Um chamado só é disparado se **todas** as suas DAGs estiverem disponíveis no Airflow. Caso contrário, a verificação retenta automaticamente até 5 vezes (com intervalo de 2 minutos) antes de falhar.
-- Ao final do processamento, **o arquivo `executions.json` é limpo automaticamente** (`executions: []`), independentemente de sucesso ou falha dos chamados.
+- Ao final do processamento, **apenas as execuções concluídas com sucesso são removidas do `executions.json`**. Chamados que falharam permanecem no arquivo para reprocessamento no próximo ciclo.
 
 ### Como registrar e disparar um chamado
 
@@ -84,7 +85,7 @@ O atendente é responsável por registrar quais DAGs devem ser executadas para a
 2. Salve o arquivo — a alteração será detectada automaticamente na próxima execução da `monitor_dags` (agendada para 19h e 23h).
 3. Para disparar imediatamente, acesse o Airflow em `http://localhost:8080`, localize a DAG `monitor_dags` e execute-a manualmente.
 
-> **Atenção:** não edite o arquivo `inputs/executions.json` enquanto a `monitor_dags` estiver em execução. O arquivo é limpo ao final de cada ciclo.
+> **Atenção:** não edite o arquivo `inputs/executions.json` enquanto a `monitor_dags` estiver em execução. Ao final de cada ciclo, apenas os chamados bem-sucedidos são removidos; os demais permanecem para reprocessamento automático.
 
 ---
 
@@ -130,25 +131,50 @@ minha_dag()
 
 ### Fluxo da DAG `monitor_dags`
 
-```
-check_file_changes              → detecta alterações no arquivo inputs/executions.json
-                                  encerra sem disparar tasks se o arquivo não mudou
-                                  ou se executions estiver vazio
-  ├── check_dags__<ticket_A>    → verifica DAGs do ticket A no DagBag (retries: 5, intervalo: 2min)
-  │     └── trigger__<ticket_A>__<dag_1>  → dispara e aguarda conclusão
-  │           └── trigger__<ticket_A>__<dag_2>  → dispara após dag_1 concluir
-  │
-  └── check_dags__<ticket_B>    → verifica DAGs do ticket B (em paralelo ao ticket A)
-        └── trigger__<ticket_B>__<dag_1>
-              │
-              └──────────────────────────────────> cleanup_inputs
-                                                   (executa ao final de todos os tickets,
-                                                    limpa executions.json)
+```mermaid
+flowchart TD
+    CFC["check_file_changes\n— short_circuit —\nVerifica mtime do executions.json\ne existência de execuções pendentes"]
+
+    CFC -->|"arquivo não alterado\nou executions vazio"| SC(["fim — short-circuit"])
+
+    CFC -->|"alteração detectada\ne execuções presentes"| CDA
+    CFC --> CDB
+
+    subgraph "ticket_A  (paralelo)"
+        CDA["check_dags__ticket_A\nretries: 5 · intervalo: 2min"]
+        CDA --> TA1["trigger__ticket_A__dag_1\nwait_for_completion"]
+        TA1 --> TA2["trigger__ticket_A__dag_2\nwait_for_completion"]
+        TA2 --> RSA["report_success__ticket_A\nskipped se qualquer task anterior falhou"]
+    end
+
+    subgraph "ticket_B  (paralelo)"
+        CDB["check_dags__ticket_B\nretries: 5 · intervalo: 2min"]
+        CDB --> TB1["trigger__ticket_B__dag_1\nwait_for_completion"]
+        TB1 --> RSB["report_success__ticket_B\nskipped se qualquer task anterior falhou"]
+    end
+
+    RSA --> CI
+    RSB --> CI
+
+    CI["cleanup_inputs\n— trigger_rule: all_done —\nRemove do executions.json apenas\nos tickets com report_success = success"]
 ```
 
-- Tickets diferentes são processados **em paralelo**.
-- A DAG `monitor_dags` é agendada para rodar às **19h e 23h** diariamente, mas pode ser disparada manualmente a qualquer momento.
-- O controle de alterações é baseado no `mtime` do arquivo `inputs/executions.json`, persistido em `inputs/monitor_dags_last_mtime` (não versionado). Esse arquivo sobrevive a reinicializações do container.
+**Descrição de cada task:**
+
+| Task | Trigger rule | Descrição |
+|---|---|---|
+| `check_file_changes` | `all_success` (short_circuit) | Compara o `mtime` atual do `executions.json` com o valor persistido em `monitor_dags_last_mtime`. Encerra toda a execução sem erro se o arquivo não foi alterado ou se não há execuções pendentes. |
+| `check_dags__<ticket>` | `all_success` | Verifica se todas as DAGs do ticket estão registradas no DagBag. Retenta até 5 vezes (intervalo de 2 min) antes de falhar. Uma instância por ticket, todas rodam em paralelo. |
+| `trigger__<ticket>__<dag>` | `all_success` | Dispara a DAG alvo via `TriggerDagRunOperator` e aguarda sua conclusão (`wait_for_completion=True`). As DAGs de um mesmo ticket rodam em sequência; se uma falhar, as seguintes são ignoradas. |
+| `report_success__<ticket>` | `all_success` (padrão) | Marcador lógico de conclusão bem-sucedida do ticket. Fica como `skipped` se qualquer task anterior do ticket falhou ou foi ignorada. |
+| `cleanup_inputs` | `all_done` | Inspeciona o estado das tasks `report_success__*` do run atual e remove do `executions.json` apenas os tickets cujo `report_success` foi `success`. Tickets com falha permanecem para reprocessamento. |
+
+**Notas gerais:**
+
+- Apenas uma execução da `monitor_dags` pode estar ativa por vez (`max_active_runs=1`).
+- Tickets diferentes são processados **em paralelo**; as DAGs dentro de cada ticket rodam **em sequência**.
+- A DAG é agendada para rodar às **19h e 23h** diariamente, mas pode ser disparada manualmente a qualquer momento.
+- O controle de alterações é baseado no `mtime` do `executions.json`, persistido em `inputs/monitor_dags_last_mtime` (não versionado). Esse arquivo sobrevive a reinicializações do container.
 
 ### Boas práticas
 
