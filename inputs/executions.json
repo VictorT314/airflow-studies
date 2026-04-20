@@ -5,14 +5,14 @@
             "dag_ids": [
                 {
                     "dag_id": "dag_study",
-                    "conf": {
+                    "inputs": {
                         "greeting": "Hello",
                         "target": "Airflow"
                     }
                 },
                 {
                     "dag_id": "dag_study_exception",
-                    "conf": {}
+                    "inputs": {}
                 }
             ]
         },
@@ -21,7 +21,7 @@
             "dag_ids": [
                 {
                     "dag_id": "dag_study",
-                    "conf": {
+                    "inputs": {
                         "greeting": "Hello",
                         "target": "Victor"
                     }
@@ -33,7 +33,7 @@
             "dag_ids": [
                 {
                     "dag_id": "dag_study",
-                    "conf": {
+                    "inputs": {
                         "greeting": "Hello",
                         "target": "another person"
                     }
