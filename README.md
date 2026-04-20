@@ -1,6 +1,6 @@
 # Airflow — Atendimento de Chamados
 
-Repositório para orquestração de chamados via Apache Airflow. A DAG `monitor_dags` é responsável por detectar alterações no arquivo de inputs, verificar a disponibilidade das DAGs configuradas, executá-las conforme definido e remover do arquivo de inputs apenas as execuções concluídas com sucesso.
+Repositório para orquestração de chamados via Apache Airflow. A DAG `dynamic_trigger_control_dag` é responsável por detectar alterações no arquivo de inputs, verificar a disponibilidade das DAGs configuradas, executá-las conforme definido e remover do arquivo de inputs apenas as execuções concluídas com sucesso.
 
 ---
 
@@ -9,7 +9,7 @@ Repositório para orquestração de chamados via Apache Airflow. A DAG `monitor_
 ```
 .
 ├── dags/                        # DAGs do Airflow
-│   ├── monitor_dags.py          # DAG orquestradora principal
+│   ├── dynamic_trigger_control_dag.py          # DAG orquestradora principal
 │   └── dag_study.py             # Exemplo de DAG de atendimento
 ├── inputs/
 │   └── executions.json          # Arquivo de configuração de execuções
@@ -52,7 +52,7 @@ O atendente é responsável por registrar quais DAGs devem ser executadas para a
             "dag_ids": [
                 {
                     "dag_id": "nome_da_dag",
-                    "conf": {
+                    "inputs": {
                         "parametro_1": "valor_1",
                         "parametro_2": "valor_2"
                     }
@@ -68,11 +68,11 @@ O atendente é responsável por registrar quais DAGs devem ser executadas para a
 | `ticket_id` | Identificador único do chamado (ex: `ATD-001`) |
 | `dag_ids` | Lista ordenada de DAGs a serem executadas para o chamado |
 | `dag_id` | Nome da DAG cadastrada no Airflow |
-| `conf` | Parâmetros de entrada para a DAG (consulte o desenvolvedor responsável pela DAG) |
+| `inputs` | Parâmetros de entrada para a DAG (consulte o desenvolvedor responsável pela DAG) |
 
 ### Regras importantes
 
-- **Apenas uma execução da `monitor_dags` pode estar ativa por vez.** Se uma execução já estiver em andamento quando um novo agendamento ou trigger ocorrer, o novo disparo será ignorado.
+- **Apenas uma execução da `dynamic_trigger_control_dag` pode estar ativa por vez.** Se uma execução já estiver em andamento quando um novo agendamento ou trigger ocorrer, o novo disparo será ignorado.
 - Cada entrada em `executions` representa um chamado independente. Chamados diferentes rodam **em paralelo**.
 - As DAGs dentro de um mesmo chamado rodam **em sequência**, na ordem em que estão listadas.
 - Se uma DAG da sequência falhar, as seguintes **não serão executadas**.
@@ -82,10 +82,10 @@ O atendente é responsável por registrar quais DAGs devem ser executadas para a
 ### Como registrar e disparar um chamado
 
 1. Edite o arquivo `inputs/executions.json` adicionando a entrada correspondente ao chamado.
-2. Salve o arquivo — a alteração será detectada automaticamente na próxima execução da `monitor_dags` (agendada para 19h e 23h).
-3. Para disparar imediatamente, acesse o Airflow em `http://localhost:8080`, localize a DAG `monitor_dags` e execute-a manualmente.
+2. Salve o arquivo — a alteração será detectada automaticamente na próxima execução da `dynamic_trigger_control_dag` (agendada para 19h e 23h).
+3. Para disparar imediatamente, acesse o Airflow em `http://localhost:8080`, localize a DAG `dynamic_trigger_control_dag` e execute-a manualmente.
 
-> **Atenção:** não edite o arquivo `inputs/executions.json` enquanto a `monitor_dags` estiver em execução. Ao final de cada ciclo, apenas os chamados bem-sucedidos são removidos; os demais permanecem para reprocessamento automático.
+> **Atenção:** não edite o arquivo `inputs/executions.json` enquanto a `dynamic_trigger_control_dag` estiver em execução. Ao final de cada ciclo, apenas os chamados bem-sucedidos são removidos; os demais permanecem para reprocessamento automático.
 
 ---
 
@@ -97,8 +97,8 @@ O desenvolvedor é responsável por criar e manter as DAGs que viabilizam o aten
 
 1. Crie um novo arquivo `.py` em `dags/`.
 2. Use o decorator `@dag` com `schedule=None` (execução apenas via trigger) e `catchup=False`.
-3. Declare os parâmetros esperados via `params` no decorator `@dag` — esses valores correspondem ao `conf` definido pelo atendente no arquivo de inputs.
-4. Acesse os parâmetros dentro das tasks via `context["params"]`.
+3. Declare os parâmetros esperados via `params` no decorator `@dag` — esses valores correspondem ao `inputs` definido pelo atendente no arquivo de inputs.
+4. Acesse os parâmetros dentro das tasks via `context["inputs"]`.
 
 **Exemplo mínimo:**
 
@@ -127,13 +127,13 @@ def minha_dag():
 minha_dag()
 ```
 
-5. Documente os parâmetros aceitos pela DAG para que o atendente saiba como preencher o `conf` no arquivo de inputs.
+5. Documente os parâmetros aceitos pela DAG para que o atendente saiba como preencher os `inputs` no arquivo de inputs.
 
-### Fluxo da DAG `monitor_dags`
+### Fluxo da DAG `dynamic_trigger_control_dag`
 
 ```mermaid
 flowchart TD
-    CFC["check_file_changes\n— short_circuit —\nVerifica mtime do executions.json\ne existência de execuções pendentes"]
+    CFC["check_input_changes\n— short_circuit —\nVerifica mtime do executions.json\ne existência de execuções pendentes"]
 
     CFC -->|"arquivo não alterado\nou executions vazio"| SC(["fim — short-circuit"])
 
@@ -163,7 +163,7 @@ flowchart TD
 
 | Task | Trigger rule | Descrição |
 |---|---|---|
-| `check_file_changes` | `all_success` (short_circuit) | Compara o `mtime` atual do `executions.json` com o valor persistido em `monitor_dags_last_mtime`. Encerra toda a execução sem erro se o arquivo não foi alterado ou se não há execuções pendentes. |
+| `check_input_changes` | `all_success` (short_circuit) | Compara o `mtime` atual do `executions.json` com o valor persistido em `dynamic_trigger_control_dag_last_mtime`. Encerra toda a execução sem erro se o arquivo não foi alterado ou se não há execuções pendentes. |
 | `check_dags__<ticket>` | `all_success` | Verifica se todas as DAGs do ticket estão registradas no DagBag. Retenta até 5 vezes (intervalo de 2 min) antes de falhar. Uma instância por ticket, todas rodam em paralelo. |
 | `trigger__<ticket>__<dag>` | `all_success` | Dispara a DAG alvo via `TriggerDagRunOperator` e aguarda sua conclusão (`wait_for_completion=True`). As DAGs de um mesmo ticket rodam em sequência; se uma falhar, as seguintes são ignoradas. |
 | `report_success__<ticket>` | `all_success` (padrão) | Marcador lógico de conclusão bem-sucedida do ticket. Fica como `skipped` se qualquer task anterior do ticket falhou ou foi ignorada. |
@@ -171,15 +171,15 @@ flowchart TD
 
 **Notas gerais:**
 
-- Apenas uma execução da `monitor_dags` pode estar ativa por vez (`max_active_runs=1`).
+- Apenas uma execução da `dynamic_trigger_control_dag` pode estar ativa por vez (`max_active_runs=1`).
 - Tickets diferentes são processados **em paralelo**; as DAGs dentro de cada ticket rodam **em sequência**.
 - A DAG é agendada para rodar às **19h e 23h** diariamente, mas pode ser disparada manualmente a qualquer momento.
-- O controle de alterações é baseado no `mtime` do `executions.json`, persistido em `inputs/monitor_dags_last_mtime` (não versionado). Esse arquivo sobrevive a reinicializações do container.
+- O controle de alterações é baseado no `mtime` do `executions.json`, persistido em `inputs/dynamic_trigger_control_dag_last_mtime` (não versionado). Esse arquivo sobrevive a reinicializações do container.
 
 ### Boas práticas
 
-- Prefira `schedule=None` em DAGs de atendimento — elas devem ser disparadas exclusivamente pela `monitor_dags`.
-- Valide os `params` no início da primeira task para falhar rapidamente com mensagem clara caso o `conf` esteja incompleto.
+- Prefira `schedule=None` em DAGs de atendimento — elas devem ser disparadas exclusivamente pela `dynamic_trigger_control_dag`.
+- Valide os `params` no início da primeira task para falhar rapidamente com mensagem clara caso o `inputs` esteja incompleto.
 - Mantenha o `dag_id` estável — renomear uma DAG em uso pode quebrar chamados em andamento.
 
 ---
@@ -194,7 +194,7 @@ flowchart TD
 
 ### Segurança e integridade
 
-- **Validação do schema do `executions.json`**: validar o arquivo de inputs contra um schema JSON (ex: com `jsonschema`) logo na task `check_file_changes`, rejeitando entradas malformadas antes de iniciar qualquer execução.
+- **Validação do schema do `executions.json`**: validar o arquivo de inputs contra um schema JSON (ex: com `jsonschema`) logo na task `check_input_changes`, rejeitando entradas malformadas antes de iniciar qualquer execução.
 - **Controle de duplicidade de `ticket_id`**: detectar e rejeitar entradas com `ticket_id` duplicado no arquivo de inputs, evitando execuções ambíguas.
 - **Backup do `executions.json` antes da limpeza**: salvar uma cópia com timestamp do arquivo antes de zerá-lo na task `cleanup_inputs`, preservando o histórico de chamados submetidos.
 
