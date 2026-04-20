@@ -8,7 +8,7 @@ __pycache__/
 logs/
 
 # Controle de estado interno (gerado em runtime)
-inputs/monitor_dags_last_mtime
+inputs/dynamic_trigger_control_dag_last_mtime
 
 # Airflow runtime
 airflow.db
